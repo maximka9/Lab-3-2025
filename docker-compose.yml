@@ -1,0 +1,228 @@
+services:
+
+  apiserver:
+    command:
+    - apiserver
+    container_name: clearml-apiserver
+    image: allegroai/clearml:latest
+    restart: unless-stopped
+    volumes:
+    - /opt/clearml/logs:/var/log/clearml
+    - /opt/clearml/config:/opt/clearml/config
+    - /opt/clearml/data/fileserver:/mnt/fileserver
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongo:
+        condition: service_started
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8008/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    environment:
+      CLEARML_ELASTIC_SERVICE_HOST: elasticsearch
+      CLEARML_ELASTIC_SERVICE_PORT: 9200
+      CLEARML_ELASTIC_SERVICE_PASSWORD: ${ELASTIC_PASSWORD}
+      CLEARML_MONGODB_SERVICE_HOST: mongo
+      CLEARML_MONGODB_SERVICE_PORT: 27017
+      CLEARML_REDIS_SERVICE_HOST: redis
+      CLEARML_REDIS_SERVICE_PORT: 6379
+      CLEARML_SERVER_DEPLOYMENT_TYPE: ${CLEARML_SERVER_DEPLOYMENT_TYPE:-linux}
+      CLEARML__apiserver__pre_populate__enabled: "true"
+      CLEARML__apiserver__pre_populate__zip_files: "/opt/clearml/db-pre-populate"
+      CLEARML__apiserver__pre_populate__artifacts_path: "/mnt/fileserver"
+      CLEARML__apiserver__pre_populate__demo_user: "true"
+      CLEARML__apiserver__pre_populate__demo_user_password: "password123"
+    ports:
+    - "8008:8008"
+    networks:
+      - backend
+      - frontend
+
+  elasticsearch:
+    networks:
+      - backend
+    container_name: clearml-elastic
+    environment:
+      ES_JAVA_OPTS: -Xms2g -Xmx2g
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD}
+      discovery.type: single-node
+      xpack.security.enabled: false
+      xpack.security.http.ssl.enabled: false
+      xpack.security.transport.ssl.enabled: false
+      xpack.security.enrollment.enabled: false
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+    restart: unless-stopped
+    volumes:
+      - elastic_data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  fileserver:
+    networks:
+      - backend
+      - frontend
+    command:
+    - fileserver
+    container_name: clearml-fileserver
+    image: allegroai/clearml:latest
+    restart: unless-stopped
+    volumes:
+    - /opt/clearml/logs:/var/log/clearml
+    - /opt/clearml/data/fileserver:/mnt/fileserver
+    - /opt/clearml/config:/opt/clearml/config
+    depends_on:
+      apiserver:
+        condition: service_started
+    ports:
+    - "8081:8081"
+
+  mongo:
+    networks:
+      - backend
+    container_name: clearml-mongo
+    image: mongo:6.0
+    restart: unless-stopped
+    volumes:
+    - /opt/clearml/data/mongo2/db:/data/db
+    - /opt/clearml/data/mongo2/configdb:/data/configdb
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  redis:
+    networks:
+      - backend
+    container_name: clearml-redis
+    image: redis:8.4.0
+    restart: unless-stopped
+    command: redis-server --save "" --appendonly no
+    volumes:
+    - /opt/clearml/data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  webserver:
+    command:
+    - webserver
+    container_name: clearml-webserver
+    image: allegroai/clearml:latest
+    restart: unless-stopped
+    depends_on:
+      apiserver:
+        condition: service_started
+    ports:
+    - "8080:80"
+    networks:
+      - backend
+      - frontend
+
+  inference-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: inference-service
+    container_name: inference-service
+    ports:
+      - "8000:8000"
+    environment:
+      - CLEARML_API_HOST=${CLEARML_API_HOST:-http://apiserver:8008}
+      - CLEARML_API_ACCESS_KEY=${CLEARML_API_ACCESS_KEY:-}
+      - CLEARML_API_SECRET_KEY=${CLEARML_API_SECRET_KEY:-}
+      - MODEL_PATH=${MODEL_PATH:-/app/models/weather_ensemble.pkl}
+    volumes:
+      - ./models:/app/models
+      - ./data:/app/data
+      - ./clearml.conf:/root/clearml.conf
+    networks:
+      - backend
+      - frontend
+    depends_on:
+      apiserver:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  training-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: training-service
+    container_name: training-service
+    environment:
+      - CLEARML_API_HOST=${CLEARML_API_HOST:-http://apiserver:8008}
+      - CLEARML_API_ACCESS_KEY=${CLEARML_API_ACCESS_KEY:-}
+      - CLEARML_API_SECRET_KEY=${CLEARML_API_SECRET_KEY:-}
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./clearml.conf:/root/clearml.conf
+    networks:
+      - backend
+    depends_on:
+      apiserver:
+        condition: service_started
+    restart: "no"
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:-admin}
+      - N8N_HOST=${N8N_HOST:-localhost}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - WEBHOOK_URL=http://localhost:5678/
+      - GENERIC_TIMEZONE=Europe/Moscow
+      - TZ=Europe/Moscow
+      - EXECUTIONS_MODE=regular
+      - N8N_METRICS=true
+      - N8N_LOG_LEVEL=info
+      - N8N_COMMUNITY_NODES_FETCH_TIMEOUT=10000
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./workflows:/data/workflows
+    networks:
+      - frontend
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+networks:
+  backend:
+    driver: bridge
+  frontend:
+    driver: bridge
+
+volumes:
+  elastic_data:
+  n8n_data:

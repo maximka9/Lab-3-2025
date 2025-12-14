@@ -1,0 +1,23 @@
+# Core dependencies
+pandas>=2.0.0
+numpy>=1.24.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+
+# ML dependencies
+lightgbm>=4.0.0
+scikit-learn>=1.3.0
+matplotlib>=3.7.0
+
+# ClearML
+clearml>=1.14.0
+
+# FastAPI and serving
+fastapi>=0.104.0
+uvicorn>=0.24.0
+pydantic>=2.0.0
+
+# Optional: Alternative ML frameworks
+# xgboost>=2.0.0
+# catboost>=1.2.0
+

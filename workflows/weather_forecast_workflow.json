@@ -1,0 +1,304 @@
+{
+  "name": "Weather Forecast Weekly",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 7 * * 1"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        200,
+        300
+      ],
+      "id": "schedule-trigger",
+      "name": "Cron: Monday 07:00"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/predict",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"city\": \"Москва\"\n}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        400,
+        200
+      ],
+      "id": "predict-moscow",
+      "name": "Predict Moscow"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/predict",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"city\": \"Санкт-Петербург\"\n}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        400,
+        400
+      ],
+      "id": "predict-spb",
+      "name": "Predict Saint-Petersburg"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Объединяем прогнозы для обоих городов\nconst allItems = $input.all();\n\nlet moscowData = null;\nlet spbData = null;\n\nfor (const item of allItems) {\n  if (item.json.city === 'Москва') {\n    moscowData = item.json;\n  } else if (item.json.city === 'Санкт-Петербург') {\n    spbData = item.json;\n  }\n}\n\n// Формируем красивое сообщение для Telegram\nlet message = '🌤️ *Еженедельный прогноз погоды*\\n';\nmessage += `📅 Дата запроса: ${new Date().toLocaleDateString('ru-RU')}\\n\\n`;\n\nfunction formatForecast(data) {\n  if (!data || !data.forecasts) return '❌ Данные недоступны\\n';\n  \n  let text = `🏙️ *${data.city}*\\n`;\n  \n  const weekdays = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];\n  \n  for (const forecast of data.forecasts) {\n    const date = new Date(forecast.date);\n    const weekday = weekdays[date.getDay()];\n    const dayMonth = date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });\n    \n    const temp = forecast.predicted_temp_avg;\n    const lower = forecast.confidence_interval.lower;\n    const upper = forecast.confidence_interval.upper;\n    \n    // Эмодзи в зависимости от температуры\n    let emoji = '🌡️';\n    if (temp < 0) emoji = '❄️';\n    else if (temp < 10) emoji = '🌥️';\n    else if (temp < 20) emoji = '⛅';\n    else if (temp < 25) emoji = '☀️';\n    else emoji = '🔥';\n    \n    text += `${emoji} ${weekday} ${dayMonth}: *${temp}°C* (${lower}...${upper})\\n`;\n  }\n  \n  return text + '\\n';\n}\n\nmessage += formatForecast(moscowData);\nmessage += formatForecast(spbData);\n\nmessage += '---\\n';\nmessage += '🤖 _Прогноз от ML-модели Weather Forecast_\\n';\n\nif (moscowData && moscowData.model_version) {\n  message += `📊 Версия модели: ${moscowData.model_version}`;\n}\n\nreturn [{\n  json: {\n    message: message,\n    moscow: moscowData,\n    spb: spbData\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        600,
+        300
+      ],
+      "id": "format-message",
+      "name": "Format Message"
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        800,
+        300
+      ],
+      "id": "send-telegram",
+      "name": "Send to Telegram",
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-credentials",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "error-check",
+              "leftValue": "={{ $json.error }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        600,
+        500
+      ],
+      "id": "check-error",
+      "name": "Check Error"
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "❌ *Ошибка прогноза погоды*\n\nНе удалось получить прогноз. Проверьте работу сервиса.\n\nОшибка: {{ $json.error }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        800,
+        500
+      ],
+      "id": "send-error",
+      "name": "Send Error to Telegram",
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-credentials",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        500,
+        300
+      ],
+      "id": "merge-results",
+      "name": "Merge Results"
+    },
+    {
+      "parameters": {
+        "url": "http://host.docker.internal:8000/health",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        300,
+        300
+      ],
+      "id": "health-check",
+      "name": "Health Check"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Cron: Monday 07:00": {
+      "main": [
+        [
+          {
+            "node": "Health Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Health Check": {
+      "main": [
+        [
+          {
+            "node": "Predict Moscow",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Predict Saint-Petersburg",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Predict Moscow": {
+      "main": [
+        [
+          {
+            "node": "Merge Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Predict Saint-Petersburg": {
+      "main": [
+        [
+          {
+            "node": "Merge Results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Results": {
+      "main": [
+        [
+          {
+            "node": "Format Message",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Message": {
+      "main": [
+        [
+          {
+            "node": "Send to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Error": {
+      "main": [
+        [
+          {
+            "node": "Send Error to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Moscow"
+  },
+  "versionId": "weather-forecast-v1",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "weather-forecast-instance"
+  },
+  "id": "weather-forecast-weekly",
+  "tags": [
+    "weather",
+    "forecast",
+    "telegram"
+  ]
+}
+
